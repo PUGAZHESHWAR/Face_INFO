@@ -1,16 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Search, Edit, Trash2, Download, Camera } from 'lucide-react';
 import { useOrganization } from '../context/OrganizationContext';
-import { getStudents, getDepartments, getClasses } from '../lib/supabase';
+import { getStudents, getDepartments, getClasses, uploadFaceImage, getFaceImageUrl } from '../lib/supabase';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
 
 const Students: React.FC = () => {
   const { currentOrganization } = useOrganization();
-  const [students, setStudents] = useState([]);
-  const [departments, setDepartments] = useState([]);
-  const [classes, setClasses] = useState([]);
+  const [students, setStudents] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<any[]>([]);
+  const [classes, setClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingStudent, setEditingStudent] = useState<any>(null);
@@ -28,7 +28,10 @@ const Students: React.FC = () => {
     address: '',
     date_of_birth: '',
     gender: '',
+    face_image_url: '',
   });
+  const [faceFile, setFaceFile] = useState<File | null>(null);
+  const [faceUploadLoading, setFaceUploadLoading] = useState(false);
 
   useEffect(() => {
     if (currentOrganization) {
@@ -61,13 +64,26 @@ const Students: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentOrganization) return;
-
+    setFaceUploadLoading(true);
     try {
+      let face_image_url = formData.face_image_url || '';
+      if (faceFile) {
+        const formDataObj = new FormData();
+        formDataObj.append('face', faceFile);
+        formDataObj.append('id', formData.roll_number);
+        const response = await fetch('http://localhost:5000/api/upload-face', {
+          method: 'POST',
+          body: formDataObj,
+        });
+        if (!response.ok) throw new Error('Face image upload failed');
+        const data = await response.json();
+        face_image_url = data.path;
+      }
       const studentData = {
         ...formData,
+        face_image_url,
         organization_id: currentOrganization.id,
       };
-
       if (editingStudent) {
         const { error } = await supabase
           .from('students')
@@ -82,13 +98,15 @@ const Students: React.FC = () => {
         if (error) throw error;
         toast.success('Student created successfully');
       }
-
       setShowModal(false);
       setEditingStudent(null);
       resetForm();
+      setFaceFile(null);
       fetchData();
     } catch (error: any) {
       toast.error(error.message || 'Failed to save student');
+    } finally {
+      setFaceUploadLoading(false);
     }
   };
 
@@ -106,6 +124,7 @@ const Students: React.FC = () => {
       address: student.address || '',
       date_of_birth: student.date_of_birth || '',
       gender: student.gender || '',
+      face_image_url: student.face_image_url || '',
     });
     setShowModal(true);
   };
@@ -139,6 +158,7 @@ const Students: React.FC = () => {
       address: '',
       date_of_birth: '',
       gender: '',
+      face_image_url: '',
     });
   };
 
@@ -454,6 +474,18 @@ const Students: React.FC = () => {
                     onChange={(e) => setFormData({ ...formData, date_of_birth: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Face Image
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={e => setFaceFile(e.target.files?.[0] || null)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  {faceUploadLoading && <span className="text-xs text-blue-600">Uploading...</span>}
                 </div>
               </div>
               <div>
