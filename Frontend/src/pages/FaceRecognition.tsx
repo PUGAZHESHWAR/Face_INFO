@@ -11,48 +11,33 @@ const FaceRecognition: React.FC = () => {
   const [recognitionResult, setRecognitionResult] = useState<any>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const capture = useCallback(() => {
+  const capture = useCallback(async () => {
     if (!webcamRef.current) return;
     
     setIsProcessing(true);
     const imageSrc = webcamRef.current.getScreenshot();
     
     if (imageSrc) {
-      // Simulate face recognition processing
-      setTimeout(() => {
-        // Mock recognition result - in real implementation, this would call your face recognition API
-        const mockResults = [
-          {
-            type: 'student',
-            name: 'John Doe',
-            id: 'ST001',
-            department: 'Computer Science',
-            class: 'BSc CS - 2nd Year - Section A',
-            confidence: 0.95,
-            photo: 'https://images.pexels.com/photos/220453/pexels-photo-220453.jpeg?auto=compress&cs=tinysrgb&w=150'
-          },
-          {
-            type: 'staff',
-            name: 'Dr. Sarah Wilson',
-            id: 'EMP001',
-            department: 'Computer Science',
-            role: 'Professor',
-            confidence: 0.92,
-            photo: 'https://images.pexels.com/photos/415829/pexels-photo-415829.jpeg?auto=compress&cs=tinysrgb&w=150'
-          },
-          null // No match found
-        ];
-        
-        const randomResult = mockResults[Math.floor(Math.random() * mockResults.length)];
-        setRecognitionResult(randomResult);
+      try {
+        const response = await fetch('http://localhost:5000/api/recognize-face', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageSrc })
+        });
+        const data = await response.json();
         setIsProcessing(false);
-        
-        if (randomResult) {
-          toast.success(`Recognized: ${randomResult.name}`);
+        if (data.recognized && data.result) {
+          setRecognitionResult(data.result);
+          toast.success(`Recognized: ${data.result.name}`);
         } else {
-          toast.error('No match found');
+          setRecognitionResult(null);
+          toast.error(data.message || 'No match found');
         }
-      }, 2000);
+      } catch (error) {
+        setIsProcessing(false);
+        setRecognitionResult(null);
+        toast.error('Recognition failed');
+      }
     }
   }, []);
 
