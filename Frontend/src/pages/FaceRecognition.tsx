@@ -44,15 +44,12 @@ const FaceRecognition: React.FC = () => {
             break;
             
           case 'recognized':
-            // You can enhance this by fetching additional student details if needed
             setRecognitionResult({
-              recognized: true,
-              identifier: data.identifier,
-              confidence: data.confidence,
-              imageUrl: data.image_url,
-              name: `Student ${data.identifier}` // Default name, can be enhanced
+              ...data,
+              name: data.student_details ? data.student_details.Name : (data.id_type === 'staff' ? `Staff ${data.identifier}` : `Student ${data.identifier}`),
+              photo: data.image_url
             });
-            toast.success(`Recognized: Student ${data.identifier}`);
+            toast.success(`Recognized: ${data.student_details ? data.student_details.Name : (data.id_type === 'staff' ? `Staff ${data.identifier}` : `Student ${data.identifier}`)}`);
             break;
             
           case 'unrecognized':

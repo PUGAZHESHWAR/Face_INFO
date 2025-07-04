@@ -75,8 +75,8 @@ const Students: React.FC = () => {
       if (faceFile) {
         const formDataObj = new FormData();
         formDataObj.append('face', faceFile);
-        formDataObj.append('roll_number', formData.roll_number); // Make sure this matches backend expectation
-        
+        formDataObj.append('identifier', formData.roll_number); 
+        formDataObj.append('id_type', 'student'); 
         console.log('Submitting with roll number:', formData.roll_number); // Debug log
   
         const uploadResponse = await fetch('http://localhost:5000/api/upload-face', {

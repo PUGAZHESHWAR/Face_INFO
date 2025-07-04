@@ -13,6 +13,7 @@ from PIL import Image
 import json
 import logging
 from werkzeug.utils import secure_filename
+import sqlite3
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -73,6 +74,17 @@ load_face_data()
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+def validate_employee_id(employee_id):
+    """Validate employee ID format"""
+    if not employee_id:
+        raise ValueError("Employee ID is required")
+    if not isinstance(employee_id, str):
+        raise ValueError("Employee ID must be a string")
+    if not employee_id.strip():
+        raise ValueError("Employee ID cannot be blank")
+    if not re.match(r'^[a-zA-Z0-9\-_]+$', employee_id):
+        raise ValueError("Employee ID contains invalid characters")
+    return employee_id.strip()
 
 def validate_student_identifier(identifier):
     """Ensure the identifier is valid before using in filenames"""
@@ -180,13 +192,13 @@ def recognize_face():
             }), 200
         
         # Check against face registry
-        tolerance = 0.5  # Default tolerance
+        tolerance = 0.5
         best_match = None
         best_confidence = 0
         best_distance = 1.0
         
-        for identifier, encodings in data_dict.items():
-            if identifier == 'undefined':
+        for registry_key, encodings in data_dict.items():
+            if registry_key == 'undefined':
                 continue
                 
             known_encodings = [np.array(enc) for enc in encodings]
@@ -195,36 +207,61 @@ def recognize_face():
             
             if min_distance < best_distance:
                 best_distance = min_distance
-                best_match = identifier
+                best_match = registry_key
                 best_confidence = 1 - min_distance
         
         # Determine if match is good enough
         if best_match and best_distance <= tolerance:
-            # Get basic info from registry without database query
-            return jsonify({
-                'status': 'recognized',
-                'identifier': best_match,
-                'confidence': float(f"{best_confidence:.2f}"),
-                'image_url': f"/face-images/{best_match}.jpg"
-            })
+            # Extract ID type and clean identifier
+            if best_match.startswith('stu_'):
+                id_type = 'student'
+                clean_id = best_match[4:]
+                # Fetch full student details from SQLite
+                conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), 'instance', 'app.db'))
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute('SELECT * FROM student WHERE "Reg_No" = ?', (clean_id,))
+                student_row = cur.fetchone()
+                student_details = dict(student_row) if student_row else None
+                conn.close()
+                return jsonify({
+                    'status': 'recognized',
+                    'id_type': id_type,
+                    'identifier': clean_id,
+                    'confidence': float(f"{best_confidence:.2f}"),
+                    'image_url': f"/face-images/{best_match}.jpg",
+                    'student_details': student_details
+                })
+            elif best_match.startswith('staff_'):
+                id_type = 'staff'
+                clean_id = best_match[6:]
+                return jsonify({
+                    'status': 'recognized',
+                    'id_type': id_type,
+                    'identifier': clean_id,
+                    'confidence': float(f"{best_confidence:.2f}"),
+                    'image_url': f"/face-images/{best_match}.jpg"
+                })
+            else:
+                id_type = 'unknown'
+                clean_id = best_match
+                return jsonify({
+                    'status': 'recognized',
+                    'id_type': id_type,
+                    'identifier': clean_id,
+                    'confidence': float(f"{best_confidence:.2f}"),
+                    'image_url': f"/face-images/{best_match}.jpg"
+                })
         else:
             return jsonify({
                 'status': 'unrecognized',
-                'message': 'No matching face in registry',
-                'debug': {
-                    'best_match': best_match,
-                    'best_distance': float(f"{best_distance:.4f}"),
-                    'registry_size': len(data_dict)
-                }
+                'message': 'No matching face in registry'
             })
             
     except Exception as e:
         logger.error(f"Recognition error: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'message': 'Face recognition failed',
-            'error': str(e)
-        }), 500
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/face-registry', methods=['GET'])
 def get_face_registry():
     """Get the complete face registry"""
@@ -273,70 +310,59 @@ def clean_registry():
 @app.route('/api/upload-face', methods=['POST'])
 def upload_face():
     try:
-        # Debug log to see what's being received
-        print("\n=== Received Upload Request ===")
-        print("Headers:", request.headers)
-        print("Form data:", request.form)
-        print("Files:", request.files)
-        
         if 'face' not in request.files:
             return jsonify({'error': 'No file part'}), 400
             
         file = request.files['face']
-        roll_number = request.form.get('roll_number')
+        identifier = request.form.get('identifier')  # Generic identifier
+        id_type = request.form.get('id_type')  # 'student' or 'staff'
         
-        # Debug log the received roll number
-        print("Received roll_number:", roll_number)
-        
-        if not roll_number:
-            return jsonify({'error': 'Roll number is required'}), 400
+        # Validate based on type
+        if id_type == 'student':
+            identifier = validate_roll_number(identifier)
+            prefix = 'stu_'
+        elif id_type == 'staff':
+            identifier = validate_employee_id(identifier)
+            prefix = 'staff_'
+        else:
+            return jsonify({'error': 'Invalid ID type'}), 400
             
-        if not isinstance(roll_number, str) or not roll_number.strip():
-            return jsonify({'error': 'Invalid roll number format'}), 400
+        if not identifier:
+            return jsonify({'error': 'Identifier is required'}), 400
             
         if file.filename == '':
             return jsonify({'error': 'No selected file'}), 400
             
         # Process the image
         image_bytes = file.read()
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        face_encoding = process_face_image(image_bytes, identifier)
         
-        if img is None:
-            return jsonify({'error': 'Invalid image data'}), 400
-            
-        # Convert to RGB
-        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        # Detect faces
-        face_locations = face_recognition.face_locations(rgb_img)
-        if not face_locations:
-            return jsonify({'error': 'No face detected in image'}), 400
-            
-        # Get encodings
-        face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
-        if not face_encodings:
-            return jsonify({'error': 'Could not encode face'}), 400
-            
-        # Save the image
-        filename = f"{roll_number}.jpg"
+        # Save with prefixed filename
+        filename = f"{prefix}{identifier}.jpg"
         filepath = os.path.join(images_path, filename)
-        cv2.imwrite(filepath, img)
         
-        # Update registry
-        if roll_number not in data_dict:
-            data_dict[roll_number] = []
-        data_dict[roll_number].append(face_encodings[0].tolist())
+        # Compress and save image
+        img = Image.open(BytesIO(image_bytes))
+        img.save(filepath, 'JPEG', quality=85, optimize=True)
+        
+        # Update registry with prefixed key
+        registry_key = f"{prefix}{identifier}"
+        if registry_key not in data_dict:
+            data_dict[registry_key] = []
+        data_dict[registry_key].append(face_encoding.tolist())
         save_face_data()
         
         return jsonify({
             'success': True,
-            'roll_number': roll_number,
+            'identifier': identifier,
+            'id_type': id_type,
             'image_path': filename
         })
         
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        print("Upload error:", str(e))
+        logger.error(f"Upload failed: {str(e)}")
         return jsonify({'error': str(e)}), 500
     
 @app.route('/api/face-registry/<identifier>', methods=['DELETE'])

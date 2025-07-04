@@ -5,6 +5,7 @@ import { getStaff, getDepartments, uploadFaceImage, getFaceImageUrl } from '../l
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
+import Webcam from 'react-webcam';
 
 const Staff: React.FC = () => {
   const { currentOrganization } = useOrganization();
@@ -17,7 +18,7 @@ const Staff: React.FC = () => {
   const [filterDepartment, setFilterDepartment] = useState('');
   const [filterRole, setFilterRole] = useState('');
   const [formData, setFormData] = useState({
-    staff_id: '',
+    employee_id: '',
     full_name: '',
     email: '',
     phone: '',
@@ -29,8 +30,11 @@ const Staff: React.FC = () => {
   });
   const [faceFile, setFaceFile] = useState<File | null>(null);
   const [faceUploadLoading, setFaceUploadLoading] = useState(false);
-
+  const [recognitionResult, setRecognitionResult] = useState<any>(null);
   const roles = ['Admin', 'Teacher', 'Lab Assistant', 'Clerk', 'Librarian', 'Other'];
+  const webcamRef = React.useRef<Webcam>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showWebcam, setShowWebcam] = useState(false);
 
   useEffect(() => {
     if (currentOrganization) {
@@ -57,21 +61,81 @@ const Staff: React.FC = () => {
       setLoading(false);
     }
   };
-
+  const recognizeStaff = async () => {
+    if (!webcamRef.current) return;
+    
+    setIsProcessing(true);
+    const imageSrc = webcamRef.current.getScreenshot();
+    
+    if (imageSrc) {
+      try {
+        const response = await fetch('http://localhost:5000/api/recognize-face', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageSrc })
+        });
+        
+        const data = await response.json();
+        
+        if (data.status === 'recognized' && data.id_type === 'staff') {
+          // Look up staff details from your database
+          const { data: staffData, error } = await supabase
+            .from('staff')
+            .select('*')
+            .eq('employee_id', data.identifier)
+            .single();
+            
+          if (staffData) {
+            setRecognitionResult({
+              ...data,
+              staff: staffData
+            });
+            toast.success(`Recognized staff: ${staffData.full_name}`);
+          } else {
+            toast.error('Staff not found in database');
+          }
+        } else if (data.status === 'recognized') {
+          toast.error('Recognized a student, not staff');
+        } else {
+          toast.error(data.message || 'Recognition failed');
+        }
+      } catch (error) {
+        toast.error('Recognition failed');
+      } finally {
+        setIsProcessing(false);
+      }
+    }
+  };
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentOrganization) return;
     setFaceUploadLoading(true);
+    
     try {
+      // First validate employee ID
+      if (!formData.employee_id.trim()) {
+        throw new Error('Employee ID is required before uploading face image');
+      }
+  
+      // Upload face image if present
       if (faceFile) {
         const formDataObj = new FormData();
         formDataObj.append('face', faceFile);
-        formDataObj.append('id', formData.staff_id);
-        const response = await fetch('http://localhost:5000/api/upload-face', {
+        formDataObj.append('identifier', formData.employee_id);
+        formDataObj.append('id_type', 'staff'); // Specify this is a staff member
+        
+        console.log('Submitting staff face with ID:', formData.employee_id);
+  
+        const uploadResponse = await fetch('http://localhost:5000/api/upload-face', {
           method: 'POST',
           body: formDataObj,
         });
-        if (!response.ok) throw new Error('Face image upload failed');
+        
+        if (!uploadResponse.ok) {
+          const errorData = await uploadResponse.json();
+          console.error('Upload error:', errorData);
+          throw new Error(errorData.error || 'Face image upload failed');
+        }
       }
       const staffData = {
         ...formData,
@@ -106,7 +170,7 @@ const Staff: React.FC = () => {
   const handleEdit = (staffMember: any) => {
     setEditingStaff(staffMember);
     setFormData({
-      staff_id: staffMember.staff_id || '',
+      employee_id: staffMember.employee_id || '',
       full_name: staffMember.full_name || '',
       email: staffMember.email || '',
       phone: staffMember.phone || '',
@@ -137,7 +201,7 @@ const Staff: React.FC = () => {
 
   const resetForm = () => {
     setFormData({
-      staff_id: '',
+      employee_id: '',
       full_name: '',
       email: '',
       phone: '',
@@ -359,8 +423,8 @@ const Staff: React.FC = () => {
                   <input
                     type="text"
                     required
-                    value={formData.staff_id}
-                    onChange={(e) => setFormData({ ...formData, staff_id: e.target.value })}
+                    value={formData.employee_id}
+                    onChange={(e) => setFormData({ ...formData, employee_id: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
@@ -460,6 +524,61 @@ const Staff: React.FC = () => {
                     <option value="other">Other</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Face Image
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={e => setFaceFile(e.target.files?.[0] || null)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowWebcam((prev) => !prev)}
+                    className="mt-2 px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm"
+                  >
+                    {showWebcam ? 'Close Webcam' : 'Capture with Webcam'}
+                  </button>
+                  {showWebcam && (
+                    <div className="mt-2 flex flex-col items-center">
+                      <Webcam
+                        audio={false}
+                        ref={webcamRef}
+                        screenshotFormat="image/jpeg"
+                        width={220}
+                        videoConstraints={{ facingMode: 'user' }}
+                      />
+                      <button
+                        type="button"
+                        className="mt-2 px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+                        disabled={isProcessing}
+                        onClick={async () => {
+                          if (!webcamRef.current) return;
+                          setIsProcessing(true);
+                          const imageSrc = webcamRef.current.getScreenshot();
+                          if (imageSrc) {
+                            // Convert base64 to Blob
+                            const res = await fetch(imageSrc);
+                            const blob = await res.blob();
+                            const file = new File([blob], `${formData.employee_id || 'staff'}_face.jpg`, { type: 'image/jpeg' });
+                            setFaceFile(file);
+                            toast.success('Face image captured from webcam');
+                          }
+                          setIsProcessing(false);
+                          setShowWebcam(false);
+                        }}
+                      >
+                        {isProcessing ? 'Processing...' : 'Capture Photo'}
+                      </button>
+                    </div>
+                  )}
+                  {faceUploadLoading && <span className="text-xs text-blue-600">Uploading...</span>}
+                  {faceFile && (
+                    <div className="mt-2 text-xs text-green-600">Face image ready for upload</div>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -489,6 +608,37 @@ const Staff: React.FC = () => {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {recognitionResult && (
+        <div className="bg-white rounded-lg shadow p-4 mt-4">
+          <h2 className="text-lg font-bold mb-2">Recognition Results</h2>
+          <div>
+            <span className="font-medium">Type:</span> {recognitionResult.id_type}
+          </div>
+          <div>
+            <span className="font-medium">Confidence:</span> {recognitionResult.confidence ? (recognitionResult.confidence * 100).toFixed(1) : ''}%
+          </div>
+          {recognitionResult.id_type === 'student' && recognitionResult.student_details ? (
+            <div className="mt-2">
+              <div><span className="font-medium">Name:</span> {recognitionResult.student_details.Name}</div>
+              <div><span className="font-medium">Reg No:</span> {recognitionResult.student_details.Reg_No}</div>
+              <div><span className="font-medium">DOB:</span> {recognitionResult.student_details.DOB}</div>
+              <div><span className="font-medium">Blood Group:</span> {recognitionResult.student_details.Blood_Group}</div>
+              <div><span className="font-medium">Phone:</span> {recognitionResult.student_details.Phone}</div>
+              <div><span className="font-medium">Dept:</span> {recognitionResult.student_details.Dept}</div>
+              <div><span className="font-medium">Gender:</span> {recognitionResult.student_details.Gender}</div>
+              <div><span className="font-medium">Organization:</span> {recognitionResult.student_details.Organization}</div>
+              <div><span className="font-medium">Performance:</span> {recognitionResult.student_details.Performance}</div>
+              <div><span className="font-medium">Remarks:</span> {recognitionResult.student_details.Remarks}</div>
+              <div><span className="font-medium">Created At:</span> {recognitionResult.student_details.Created_At}</div>
+            </div>
+          ) : (
+            <div className="mt-2">
+              <span className="font-medium">Identifier:</span> {recognitionResult.identifier}
+            </div>
+          )}
         </div>
       )}
     </div>
