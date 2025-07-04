@@ -71,7 +71,7 @@ const Students: React.FC = () => {
         throw new Error('Roll number is required before uploading face image');
       }
   
-      // Upload face image if present
+      // Upload face image if presen
       if (faceFile) {
         const formDataObj = new FormData();
         formDataObj.append('face', faceFile);

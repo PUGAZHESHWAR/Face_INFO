@@ -3,6 +3,7 @@ import Webcam from 'react-webcam';
 import { Camera, User, AlertCircle, CheckCircle } from 'lucide-react';
 import { useOrganization } from '../context/OrganizationContext';
 import toast from 'react-hot-toast';
+import { supabase } from '../lib/supabase';
 
 const FaceRecognition: React.FC = () => {
   const { currentOrganization } = useOrganization();
@@ -13,7 +14,7 @@ const FaceRecognition: React.FC = () => {
 
   const capture = useCallback(async () => {
     if (!webcamRef.current) return;
-    
+
     setIsProcessing(true);
     const imageSrc = webcamRef.current.getScreenshot();
     
@@ -26,7 +27,7 @@ const FaceRecognition: React.FC = () => {
         });
         
         const data = await response.json();
-        
+        // console.log(data)
         if (!response.ok) {
           throw new Error(data.message || 'Recognition failed');
         }
@@ -43,14 +44,45 @@ const FaceRecognition: React.FC = () => {
             setRecognitionResult(null);
             break;
             
-          case 'recognized':
-            setRecognitionResult({
-              ...data,
-              name: data.student_details ? data.student_details.Name : (data.id_type === 'staff' ? `Staff ${data.identifier}` : `Student ${data.identifier}`),
-              photo: data.image_url
-            });
-            toast.success(`Recognized: ${data.student_details ? data.student_details.Name : (data.id_type === 'staff' ? `Staff ${data.identifier}` : `Student ${data.identifier}`)}`);
-            break;
+            case 'recognized': {
+              const { data: studentData, error } = await supabase
+                .from('students')
+                .select('*')
+                .eq('roll_number', data.identifier);
+            
+              if (error) {
+                console.error('Supabase error:', error);
+                toast.error('Failed to fetch student details');
+                setRecognitionResult(null);
+                break;
+              }
+            
+              const student = studentData?.[0];
+            
+              if (!student) {
+                toast.error('Student not found in database');
+                setRecognitionResult(null);
+                break;
+              }
+            
+              setRecognitionResult({
+                name: student.full_name,
+                id: student.roll_number,
+                type: 'student',
+                department: student.course,
+                class: student.semester,
+                gender: student.gender,
+                email: student.email,
+                phone: student.phone,
+                dob: student.date_of_birth,
+                photo: data.image_url,
+                confidence: data.confidence ?? 1 // Fallback if not present
+              });
+            
+              toast.success(`Recognized: ${student.full_name}`);
+              break;
+            }
+            
             
           case 'unrecognized':
             setRecognitionResult({
@@ -191,23 +223,35 @@ const FaceRecognition: React.FC = () => {
                   <h4 className="text-xl font-semibold text-gray-900">{recognitionResult.name}</h4>
                   <p className="text-gray-600 capitalize">{recognitionResult.type}</p>
                   <div className="mt-2 space-y-1">
-                    <p className="text-sm text-gray-600">
-                      <span className="font-medium">ID:</span> {recognitionResult.id}
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      <span className="font-medium">Department:</span> {recognitionResult.department}
-                    </p>
-                    {recognitionResult.class && (
-                      <p className="text-sm text-gray-600">
-                        <span className="font-medium">Class:</span> {recognitionResult.class}
-                      </p>
-                    )}
-                    {recognitionResult.role && (
-                      <p className="text-sm text-gray-600">
-                        <span className="font-medium">Role:</span> {recognitionResult.role}
-                      </p>
-                    )}
-                  </div>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">ID (Roll No):</span> {recognitionResult.id}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Full Name:</span> {recognitionResult.name}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Department:</span> {recognitionResult.department}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Semester:</span> {recognitionResult.class}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Gender:</span> {recognitionResult.gender}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Date of Birth:</span> {recognitionResult.dob}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Email:</span> {recognitionResult.email}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Phone:</span> {recognitionResult.phone}
+  </p>
+  <p className="text-sm text-gray-600">
+    <span className="font-medium">Address:</span> {recognitionResult.address}
+  </p>
+</div>
+
                 </div>
               </div>
 
