@@ -1,533 +1,435 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_socketio import SocketIO
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, date
-from sqlalchemy import and_
+from datetime import datetime
 import os
 import face_recognition
-from dotenv import load_dotenv
 import numpy as np
-import random
 import cv2
-import platform
-import time
 import base64
-import threading
+import re
+from io import BytesIO
+from PIL import Image
+import json
+import logging
 from werkzeug.utils import secure_filename
-from flask import render_template
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-db = SQLAlchemy()
-def create_app():
-    app = Flask(__name__)
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
-    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    
-    db.init_app(app)
-    
-    with app.app_context():
-        # Clear existing models to prevent redefinition errors
-        db.reflect()
-        db.drop_all()
-        
-        # Define your models
-        class Profile(db.Model):
-            id = db.Column(db.Integer, primary_key=True)
-            institution_name = db.Column(db.String(100), nullable=False)
-            logo_filename = db.Column(db.String(100), nullable=True)
-            created_at = db.Column(db.DateTime, default=datetime.utcnow)
-        
-        # Create tables
-        db.create_all()
-    
-    return app
-
-app = create_app()
-
-load_dotenv()
-
+# Initialize Flask app
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Configuration
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
+app.config['ALLOWED_EXTENSIONS'] = {'jpg', 'jpeg', 'png'}
 
-db = SQLAlchemy(app)
-class Profile(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    institution_name = db.Column(db.String(100), nullable=False)
-    logo_filename = db.Column(db.String(100), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+# Face images directory
+images_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'face-images'))
+os.makedirs(images_path, exist_ok=True)
 
-class Student(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    Name = db.Column(db.String(20), nullable=False)
-    Reg_No = db.Column(db.String(10), unique=True, nullable=False)
-    DOB = db.Column(db.Date, unique=False, nullable=False)
-    Blood_Group = db.Column(db.String(5), unique=False, nullable=False)
-    Phone = db.Column(db.String(10), unique=True, nullable=False)
-    Dept = db.Column(db.String(10), unique=False, nullable=False)
-    Gender = db.Column(db.String(10), unique=False, nullable=False)
-    Organization = db.Column(db.String(100), unique=False, nullable=True)
-    Performance = db.Column(db.String(100), nullable=True)
-    Remarks = db.Column(db.String(100), unique=False, nullable=False)
-    Created_At = db.Column(db.DateTime, default=datetime.utcnow)
-
-class Profile(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    institution_name = db.Column(db.String(100), nullable=False)
-    logo_filename = db.Column(db.String(100), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-with app.app_context():
-    db.create_all()
-
-images_path = "Images"
-if not os.path.exists(images_path):
-    os.makedirs(images_path)
-    
-rand_id = []
+# In-memory storage for face encodings
 data_dict = {}
+face_registry_path = os.path.join(images_path, 'face_registry.json')
+def validate_roll_number(roll_number):
+    """Validate roll number format"""
+    if not roll_number:
+        raise ValueError("Roll number is required")
+    if not isinstance(roll_number, str):
+        raise ValueError("Roll number must be a string")
+    if not roll_number.strip():
+        raise ValueError("Roll number cannot be blank")
+    if not re.match(r'^[a-zA-Z0-9\-_]+$', roll_number):
+        raise ValueError("Roll number contains invalid characters")
+    return roll_number.strip()
 
-for image_name in os.listdir(images_path):
-    if image_name.endswith(('.jpg', '.png', '.jpeg')):
-        card_id = os.path.splitext(image_name)[0]  
-        image_path = os.path.join(images_path, image_name)
-        image = face_recognition.load_image_file(image_path)
-        face_encodings = face_recognition.face_encodings(image)
+# Load existing face data
+def load_face_data():
+    global data_dict
+    try:
+        if os.path.exists(face_registry_path):
+            with open(face_registry_path, 'r') as f:
+                data_dict = json.load(f)
+        logger.info(f"Loaded {len(data_dict)} face encodings")
+    except Exception as e:
+        logger.error(f"Error loading face data: {str(e)}")
+        data_dict = {}
 
-        if face_encodings:
-            if card_id not in data_dict:
-                data_dict[card_id] = []
-            data_dict[card_id].append(face_encodings[0])
+def save_face_data():
+    try:
+        with open(face_registry_path, 'w') as f:
+            json.dump(data_dict, f)
+    except Exception as e:
+        logger.error(f"Error saving face data: {str(e)}")
 
-for key in data_dict:
-    data_dict[key] = [encoding.tolist() for encoding in data_dict[key]]
+# Initialize face data
+load_face_data()
+
+# Utility functions
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+def validate_student_identifier(identifier):
+    """Ensure the identifier is valid before using in filenames"""
+    if not identifier:
+        raise ValueError("Identifier cannot be empty")
+    if not isinstance(identifier, (str, int)):
+        raise ValueError("Identifier must be string or number")
+    if isinstance(identifier, str) and not identifier.strip():
+        raise ValueError("Identifier cannot be blank")
+    return str(identifier).strip()
+
+def cleanup_undefined_files():
+    """Remove any files saved as undefined.jpg"""
+    undefined_path = os.path.join(images_path, 'undefined.jpg')
+    if os.path.exists(undefined_path):
+        os.remove(undefined_path)
+        logger.info("Removed undefined.jpg")
     
-camera = None
-camera_thread = None
-stop_camera = False
+    # Clean any files with 'undefined' in name
+    for filename in os.listdir(images_path):
+        if 'undefined' in filename.lower():
+            os.remove(os.path.join(images_path, filename))
+            logger.info(f"Removed invalid file: {filename}")
 
-from flask import render_template
+# Clean up at startup
+cleanup_undefined_files()
 
-@app.route('/')
-def home():
-    print("[DEBUG] Home page loaded")
-    return render_template('home.html')
-
-
-@app.route('/api/get-profile')
-def get_profile():
-    profile = Profile.query.order_by(Profile.created_at.desc()).first()
-    if not profile:
-        return jsonify({
-            'institution_name': 'Default Institution',
-            'logo_url': None
-        })
-    return jsonify({
-        'institution_name': profile.institution_name,
-        'logo_url': f"/static/uploads/{profile.logo_filename}" if profile.logo_filename else None
-    })
-
-@app.route('/api/set-profile', methods=['POST'])
-def set_profile():
-    institution_name = request.form.get('institution_name')
-    logo = request.files.get('logo')
-
-    if not institution_name:
-        return jsonify({'error': 'Institution name is required'}), 400
-
-    filename = None
-    if logo:
-        filename = secure_filename(logo.filename)
-        logo.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-
-    profile = Profile(institution_name=institution_name, logo_filename=filename)
-    db.session.add(profile)
-    db.session.commit()
-
-    return jsonify({
-        'message': 'Profile created successfully',
-        'logo_url': f"/static/uploads/{filename}" if filename else None
-    }), 201
-@app.route('/api/start-camera', methods=['POST'])
-def start_camera():
-    global camera, camera_thread, stop_camera
+def process_face_image(image_bytes, identifier):
+    """Process and validate a face image"""
     try:
-        if camera is None:
-            camera = cv2.VideoCapture(0)
-            if not camera.isOpened():
-                return jsonify({'error': 'Failed to open camera'}), 500
-            stop_camera = False
-            camera_thread = threading.Thread(target=camera_stream)
-            camera_thread.start()
-        return jsonify({'message': 'Camera started successfully'}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/set-profile', methods=['POST'])
-def set_profile():
-    institution_name = request.form.get('institution_name')
-    logo = request.files.get('logo')
-
-    if not institution_name:
-        return jsonify({'error': 'Institution name is required'}), 400
-
-    filename = None
-    if logo:
-        filename = secure_filename(logo.filename)
-        logo.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-
-    profile = Profile(institution_name=institution_name, logo_filename=filename)
-    db.session.add(profile)
-    db.session.commit()
-
-    return jsonify({'message': 'Profile created successfully'}), 201
-
-
-@app.route('/api/stop-camera', methods=['POST'])
-def stop_camera_route():
-    global camera, camera_thread, stop_camera
-    try:
-        if camera is not None:
-            stop_camera = True
-            if camera_thread is not None:
-                camera_thread.join()
-            camera.release()
-            camera = None
-        return jsonify({'message': 'Camera stopped successfully'}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-def camera_stream():
-    global camera, stop_camera
-    while not stop_camera:
-        if camera is not None:
-            success, frame = camera.read()
-            if success:
-                ret, buffer = cv2.imencode('.jpg', frame)
-                if ret:
-                    frame_bytes = base64.b64encode(buffer).decode('utf-8')
-                    socketio.emit('camera_frame', {'image': frame_bytes})
-        time.sleep(0.1)
-
-recognition_thread = None
-recognition_running = False
-
-def background_face_recognition():
-    global camera, recognition_running
-
-    print("[DEBUG] Face recognition thread started")
-
-    with app.app_context():
-        while recognition_running:
-            try:
-                # ... [previous code remains the same] ...
-
-                if not face_encodings:
-                    print("[DEBUG] No face detected")
-                    socketio.emit('face_recognition_result', {
-                        'face_detected': False,
-                        'identified': False,
-                        'student_name': None,
-                        'student': None  # Explicitly set student to None
-                    })
-                    continue  
-                else:
-                    unknown_encoding = face_encodings[0]
-                    identified = False
-                    matched_name = None
-
-                    for card_id, encodings in data_dict.items():
-                        known_encodings = [np.array(enc) for enc in encodings]
-                        results = face_recognition.compare_faces(known_encodings, unknown_encoding, tolerance=0.45)
-                        if True in results:
-                            identified = True
-                            student = Student.query.filter_by(id=int(card_id)).first()
-                            if student:
-                                matched_name = student.Name
-                                # Send all student details
-                                socketio.emit('face_recognition_result', {
-                                    'face_detected': True,  # Fixed typo (was 'face_dected')
-                                    'identified': True,
-                                    'student': {
-                                        'Name': student.Name,
-                                        'Reg_No': student.Reg_No,
-                                        'Organization': student.Organization,
-                                        'Performance': student.Performance,
-                                        'DOB': student.DOB.strftime('%Y-%m-%d'),
-                                        'Blood_Group': student.Blood_Group,
-                                        'Phone': student.Phone,
-                                        'Dept': student.Dept,
-                                        'Gender': student.Gender,
-                                        'Remarks': student.Remarks
-                                    }
-                                })
-                            break
-
-                    if not identified:
-                        print("[DEBUG] Face detected but not identified")
-                        socketio.emit('face_recognition_result', {
-                            'face_detected': True,
-                            'identified': False,
-                            'student_name': None
-                        })
-
-            except Exception as e:
-                print(f"[ERROR] Exception in recognition thread: {e}")
-
-            time.sleep(1/3)  # Process ~3 times per second
-
-@app.route('/api/students', methods=['POST'])
-def add_student():
-    data = request.json
-    try:
-        new_num = None
-        while True:
-            new_num = random.randint(10**9, 10**10-1)
-            if new_num not in rand_id:
-                rand_id.append(new_num)
-                break
+        # Convert bytes to numpy array
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Invalid image data")
         
-        student = Student(
-            Name=data['Name'].upper(),
-            Reg_No=data['Reg_No'],
-            DOB=datetime.strptime(data['DOB'], '%Y-%m-%d').date(),
-            Blood_Group=data['Blood_Group'],
-            Phone=data['Phone'],
-            Dept=data['Dept'],
-            Gender=data['Gender'],
-            Organization=data.get('Organization', ''),
-            Performance=data.get('Performance', ''),  
-            Remarks=data.get('Remarks', '')
-        )
-
-
-        db.session.add(student)
-        db.session.commit()
-        return jsonify({
-            'message': 'Student added successfully',
-            'student': {
-                'Name': student.Name,
-                'Reg_No': student.Reg_No,
-                'Performance': student.Performance,  
-                'DOB': student.DOB,
-                'Blood_Group': student.Blood_Group,
-                'Phone': student.Phone,
-                'Dept': student.Dept,
-                'Gender': student.Gender,
-                'Organization': student.Organization,  
-                'Remarks': student.Remarks
-            }
-        }), 201
-
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 400
-    
-@socketio.on('scan_card')
-def handle_card_scan(data):
-    card_id = data.get('card_id')
-    student = Student.query.filter_by(Card_Id=card_id).first()
-
-    if student:
-        socketio.emit('face_recognition_result', {
-            'face_detected': True,
-            'identified': True,
-            'student': {
-                'Name': student.Name,
-                'Reg_No': student.Reg_No,
-                'DOB': student.DOB.strftime('%Y-%m-%d'),
-                'Blood_Group': student.Blood_Group,
-                'Phone': student.Phone,
-                'Dept': student.Dept,
-                'Gender': student.Gender,
-                'Organization': student.Organization,  
-                'Remarks': student.Remarks
-            }
-        })
-
-    else:
-        socketio.emit('card_scanned', {
-            'success': False,
-            'message': 'Card not found!'
-        })
-
-@app.route('/api/unassigned-cards', methods=['GET'])
-def get_unassigned_cards():
-    try:
-        assigned_cards = {int(os.path.splitext(f)[0]) for f in os.listdir(images_path) 
-                       if f.endswith(('.jpg', '.png', '.jpeg'))}
-        all_students = Student.query.all()
-        unassigned_cards = [student.id for student in all_students 
-                          if student.id not in assigned_cards]
-        print(f"Unassigned cards: {unassigned_cards}")  # Debug log
-        return jsonify(unassigned_cards)
-    except Exception as e:
-        print(f"Error in get_unassigned_cards: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-@app.route('/api/capture-image', methods=['POST'])
-def capture_image():
-    global camera
-    try:
-        data = request.json
-        card_id = data.get('card_id')
+        # Convert to RGB (face_recognition uses RGB)
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        if not card_id:
-            return jsonify({'error': 'Card ID is required'}), 400
-            
-        if camera is None:
-            return jsonify({'error': 'Camera is not started'}), 400
-            
-        success, frame = camera.read()
-        if not success:
-            return jsonify({'error': 'Failed to capture image'}), 500
-
-        image_path = os.path.join(images_path, f"{card_id}.jpg")
-        cv2.imwrite(image_path, frame)
-        camera.release()
-
-        image = face_recognition.load_image_file(image_path)
-        face_encodings = face_recognition.face_encodings(image)
+        # Find face locations with multiple methods
+        face_locations = face_recognition.face_locations(rgb_img, model="hog")
+        if not face_locations:
+            face_locations = face_recognition.face_locations(rgb_img, model="cnn")
         
-        if face_encodings:
-            if card_id not in data_dict:
-                data_dict[card_id] = []
-            data_dict[card_id].append(face_encodings[0].tolist())
-            socketio.emit('image_captured', {'success': True})
-            return jsonify({'message': 'Image captured and saved successfully'}), 200
-        else:
-            os.remove(image_path) 
-            return jsonify({'error': 'No face detected in the captured image'}), 400
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    
-@socketio.on('perform_face_recognition')
-def handle_face_recognition_trigger():
-    global recognition_thread, recognition_running
-
-    if not recognition_running:
-        recognition_running = True
-        recognition_thread = threading.Thread(target=background_face_recognition)
-        recognition_thread.start()
-
-@socketio.on('stop_face_recognition')
-def stop_face_recognition():
-    global recognition_running
-    recognition_running = False
-
-
-@app.route('/api/assign-image', methods=['POST'])
-def assign_image():
-    try:
-        data = request.json
-        card_id = data.get('card_id')
-        image_data = data.get('image') 
-
-        if not card_id or not image_data:
-            return jsonify({'error': 'Card ID and image data are required'}), 400
-
-        if 'base64,' in image_data:
-            image_data = image_data.split('base64,')[1]
-
-        image_bytes = base64.b64decode(image_data)
-
-        image_path = os.path.join(images_path, f"{card_id}.jpg")
-        with open(image_path, 'wb') as f:
-            f.write(image_bytes)
-
-        image = face_recognition.load_image_file(image_path)
-        face_encodings = face_recognition.face_encodings(image)
+        if not face_locations:
+            raise ValueError("No face detected in image")
         
-        if face_encodings:
-            if card_id not in data_dict:
-                data_dict[card_id] = []
-            data_dict[card_id].append(face_encodings[0].tolist())
-            return jsonify({'message': 'Image assigned successfully'}), 200
-        else:
-            os.remove(image_path)
-            return jsonify({'error': 'No face detected in the image'}), 400
-
+        # Get face encodings
+        face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
+        if not face_encodings:
+            raise ValueError("Could not encode face")
+        
+        return face_encodings[0]
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Face processing failed: {str(e)}")
+        raise
 
-@socketio.on('connect')
-def handle_connect():
-    print('Client connected')
-
-@socket.on('disconnect')
-def handle_disconnect():
-    print('Client disconnected')
 
 @app.route('/api/recognize-face', methods=['POST'])
 def recognize_face():
     try:
         data = request.json
         image_data = data.get('image')
+        
         if not image_data:
             return jsonify({'error': 'Image data is required'}), 400
 
         # Remove base64 header if present
         if 'base64,' in image_data:
             image_data = image_data.split('base64,')[1]
+        
+        # Convert to numpy array
         image_bytes = base64.b64decode(image_data)
-
-        # Convert bytes to numpy array for OpenCV
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
         if img is None:
             return jsonify({'error': 'Invalid image data'}), 400
 
-        # Face recognition
-        face_encodings = face_recognition.face_encodings(img)
-        if not face_encodings:
-            return jsonify({'recognized': False, 'message': 'No face detected'}), 200
-        unknown_encoding = face_encodings[0]
-
-        # Find best match
-        best_match = None
-        best_confidence = 0.0
-        best_card_id = None
-        for card_id, encodings in data_dict.items():
-            known_encodings = [np.array(enc) for enc in encodings]
-            results = face_recognition.compare_faces(known_encodings, unknown_encoding, tolerance=0.45)
-            face_distances = face_recognition.face_distance(known_encodings, unknown_encoding)
-            for idx, match in enumerate(results):
-                if match:
-                    confidence = 1 - face_distances[idx]  # Higher is better
-                    if confidence > best_confidence:
-                        best_confidence = confidence
-                        best_match = card_id
-                        best_card_id = card_id
-        if best_match:
-            student = Student.query.filter_by(id=int(best_card_id)).first()
-            if student:
-                # Try to find the photo path
-                photo_path = f"/Images/{best_card_id}.jpg"
-                # Compose result
-                result = {
-                    'type': 'student',
-                    'name': student.Name,
-                    'id': student.Reg_No,
-                    'department': student.Dept,
-                    'class': '',  # Add class if available
-                    'confidence': float(f"{best_confidence:.2f}"),
-                    'photo': photo_path
+        # Convert to RGB (face_recognition uses RGB)
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Try multiple face detection methods
+        face_locations = face_recognition.face_locations(rgb_img, model="hog")
+        if not face_locations:
+            face_locations = face_recognition.face_locations(rgb_img, model="cnn")
+            logger.debug("Used CNN model to find faces")
+        
+        if not face_locations:
+            return jsonify({
+                'status': 'no_face',
+                'message': 'No face detected in the image',
+                'debug': {
+                    'image_size': f"{rgb_img.shape[1]}x{rgb_img.shape[0]}"
                 }
-                return jsonify({'recognized': True, 'result': result}), 200
-        # No match found
-        return jsonify({'recognized': False, 'message': 'No match found'}), 200
+            }), 200
+        
+        # Get face encodings
+        face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
+        
+        if not face_encodings:
+            return jsonify({
+                'status': 'no_encoding',
+                'message': 'Face detected but could not generate encoding'
+            }), 200
+        
+        # Check against face registry
+        tolerance = 0.5  # Default tolerance
+        best_match = None
+        best_confidence = 0
+        best_distance = 1.0
+        
+        for identifier, encodings in data_dict.items():
+            if identifier == 'undefined':
+                continue
+                
+            known_encodings = [np.array(enc) for enc in encodings]
+            distances = face_recognition.face_distance(known_encodings, face_encodings[0])
+            min_distance = min(distances)
+            
+            if min_distance < best_distance:
+                best_distance = min_distance
+                best_match = identifier
+                best_confidence = 1 - min_distance
+        
+        # Determine if match is good enough
+        if best_match and best_distance <= tolerance:
+            # Get basic info from registry without database query
+            return jsonify({
+                'status': 'recognized',
+                'identifier': best_match,
+                'confidence': float(f"{best_confidence:.2f}"),
+                'image_url': f"/face-images/{best_match}.jpg"
+            })
+        else:
+            return jsonify({
+                'status': 'unrecognized',
+                'message': 'No matching face in registry',
+                'debug': {
+                    'best_match': best_match,
+                    'best_distance': float(f"{best_distance:.4f}"),
+                    'registry_size': len(data_dict)
+                }
+            })
+            
+    except Exception as e:
+        logger.error(f"Recognition error: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Face recognition failed',
+            'error': str(e)
+        }), 500
+@app.route('/api/face-registry', methods=['GET'])
+def get_face_registry():
+    """Get the complete face registry"""
+    return jsonify({
+        'count': len(data_dict),
+        'roll_numbers': list(data_dict.keys()),
+        'last_updated': datetime.now().isoformat()
+    })
+
+@app.route('/api/face-registry/<roll_number>', methods=['GET'])
+def get_face_data(roll_number):
+    """Get face data for specific roll number"""
+    try:
+        roll_number = validate_roll_number(roll_number)
+        if roll_number in data_dict:
+            return jsonify({
+                'roll_number': roll_number,
+                'encodings_count': len(data_dict[roll_number]),
+                'image_exists': os.path.exists(os.path.join(images_path, f"{roll_number}.jpg"))
+            })
+        return jsonify({'error': 'Roll number not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/face-registry/clean', methods=['POST'])
+def clean_registry():
+    """Clean invalid entries from registry"""
+    try:
+        # Remove entries with no corresponding image
+        to_remove = []
+        for roll_number in data_dict:
+            if not os.path.exists(os.path.join(images_path, f"{roll_number}.jpg")):
+                to_remove.append(roll_number)
+        
+        for roll_number in to_remove:
+            del data_dict[roll_number]
+        
+        save_face_data()
+        return jsonify({
+            'removed': to_remove,
+            'remaining': len(data_dict)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/upload-face', methods=['POST'])
+def upload_face():
+    try:
+        # Debug log to see what's being received
+        print("\n=== Received Upload Request ===")
+        print("Headers:", request.headers)
+        print("Form data:", request.form)
+        print("Files:", request.files)
+        
+        if 'face' not in request.files:
+            return jsonify({'error': 'No file part'}), 400
+            
+        file = request.files['face']
+        roll_number = request.form.get('roll_number')
+        
+        # Debug log the received roll number
+        print("Received roll_number:", roll_number)
+        
+        if not roll_number:
+            return jsonify({'error': 'Roll number is required'}), 400
+            
+        if not isinstance(roll_number, str) or not roll_number.strip():
+            return jsonify({'error': 'Invalid roll number format'}), 400
+            
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+            
+        # Process the image
+        image_bytes = file.read()
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            return jsonify({'error': 'Invalid image data'}), 400
+            
+        # Convert to RGB
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Detect faces
+        face_locations = face_recognition.face_locations(rgb_img)
+        if not face_locations:
+            return jsonify({'error': 'No face detected in image'}), 400
+            
+        # Get encodings
+        face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
+        if not face_encodings:
+            return jsonify({'error': 'Could not encode face'}), 400
+            
+        # Save the image
+        filename = f"{roll_number}.jpg"
+        filepath = os.path.join(images_path, filename)
+        cv2.imwrite(filepath, img)
+        
+        # Update registry
+        if roll_number not in data_dict:
+            data_dict[roll_number] = []
+        data_dict[roll_number].append(face_encodings[0].tolist())
+        save_face_data()
+        
+        return jsonify({
+            'success': True,
+            'roll_number': roll_number,
+            'image_path': filename
+        })
+        
+    except Exception as e:
+        print("Upload error:", str(e))
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/face-registry/<identifier>', methods=['DELETE'])
+def remove_face_from_registry(identifier):
+    """Remove a face from the registry"""
+    try:
+        if identifier in data_dict:
+            del data_dict[identifier]
+            save_face_data()
+            
+            # Optionally delete the image file
+            image_path = os.path.join(images_path, f"{identifier}.jpg")
+            if os.path.exists(image_path):
+                os.remove(image_path)
+                
+            return jsonify({
+                'message': f"Removed face data for {identifier}",
+                'remaining': len(data_dict)
+            })
+        else:
+            return jsonify({'error': 'Identifier not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500   
+# Debug endpoints
+@app.route('/api/debug/face-data', methods=['GET'])
+def debug_face_data():
+    """Inspect current face data"""
+    return jsonify({
+        'registered_faces': list(data_dict.keys()),
+        'face_images': os.listdir(images_path),
+        'data_dict_sample': {k: len(v) for k, v in data_dict.items()}
+    })
+
+@app.route('/api/debug/test-encoding', methods=['POST'])
+def test_encoding():
+    """Test if a face can be properly encoded"""
+    try:
+        image_data = request.json.get('image')
+        if not image_data:
+            return jsonify({'error': 'Image data required'}), 400
+            
+        if 'base64,' in image_data:
+            image_data = image_data.split('base64,')[1]
+            
+        image_bytes = base64.b64decode(image_data)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Try multiple face detection methods
+        face_locations_hog = face_recognition.face_locations(rgb_img, model="hog")
+        face_locations_cnn = face_recognition.face_locations(rgb_img, model="cnn")
+        
+        encodings = face_recognition.face_encodings(rgb_img, face_locations_hog)
+        
+        return jsonify({
+            'hog_faces': len(face_locations_hog),
+            'cnn_faces': len(face_locations_cnn),
+            'encodings': len(encodings),
+            'encoding_sample': encodings[0].tolist() if encodings else None
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/reload-face-data', methods=['POST'])
+def reload_face_data():
+    """Re-register all faces from disk"""
+    global data_dict
+    data_dict = {}
+    
+    for filename in os.listdir(images_path):
+        if filename.endswith(('.jpg', '.jpeg', '.png')):
+            try:
+                identifier = os.path.splitext(filename)[0]
+                if identifier == 'undefined':
+                    continue
+                    
+                image_path = os.path.join(images_path, filename)
+                image = face_recognition.load_image_file(image_path)
+                face_encodings = face_recognition.face_encodings(image)
+                
+                if face_encodings:
+                    if identifier not in data_dict:
+                        data_dict[identifier] = []
+                    data_dict[identifier].append(face_encodings[0].tolist())
+            except Exception as e:
+                logger.error(f"Error processing {filename}: {str(e)}")
+    
+    save_face_data()
+    return jsonify({
+        'message': f'Reloaded {len(data_dict)} face encodings',
+        'data_dict_keys': list(data_dict.keys())
+    })
+
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-    socketio.run(app, host='0.0.0.0', debug=True, port=5000)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)

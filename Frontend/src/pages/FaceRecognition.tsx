@@ -24,19 +24,53 @@ const FaceRecognition: React.FC = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image: imageSrc })
         });
+        
         const data = await response.json();
-        setIsProcessing(false);
-        if (data.recognized && data.result) {
-          setRecognitionResult(data.result);
-          toast.success(`Recognized: ${data.result.name}`);
-        } else {
-          setRecognitionResult(null);
-          toast.error(data.message || 'No match found');
+        
+        if (!response.ok) {
+          throw new Error(data.message || 'Recognition failed');
         }
-      } catch (error) {
-        setIsProcessing(false);
+        
+        // Handle different response statuses
+        switch (data.status) {
+          case 'no_face':
+            toast.error('No face detected. Please ensure your face is clearly visible');
+            setRecognitionResult(null);
+            break;
+            
+          case 'no_encoding':
+            toast.error('Could not process face. Try again with better lighting');
+            setRecognitionResult(null);
+            break;
+            
+          case 'recognized':
+            // You can enhance this by fetching additional student details if needed
+            setRecognitionResult({
+              recognized: true,
+              identifier: data.identifier,
+              confidence: data.confidence,
+              imageUrl: data.image_url,
+              name: `Student ${data.identifier}` // Default name, can be enhanced
+            });
+            toast.success(`Recognized: Student ${data.identifier}`);
+            break;
+            
+          case 'unrecognized':
+            setRecognitionResult({
+              recognized: false,
+              message: 'Person not registered in the system'
+            });
+            toast.error('Person not registered');
+            break;
+            
+          default:
+            throw new Error('Unknown response status');
+        }
+      } catch (error: any) {
         setRecognitionResult(null);
-        toast.error('Recognition failed');
+        toast.error(error.message || 'Recognition failed');
+      } finally {
+        setIsProcessing(false);
       }
     }
   }, []);

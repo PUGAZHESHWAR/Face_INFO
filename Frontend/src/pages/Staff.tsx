@@ -17,20 +17,15 @@ const Staff: React.FC = () => {
   const [filterDepartment, setFilterDepartment] = useState('');
   const [filterRole, setFilterRole] = useState('');
   const [formData, setFormData] = useState({
-    employee_id: '',
+    staff_id: '',
     full_name: '',
     email: '',
     phone: '',
     department_id: '',
     role: '',
-    designation: '',
-    qualification: '',
-    experience: '',
     address: '',
     date_of_birth: '',
     gender: '',
-    joining_date: '',
-    face_image_url: '',
   });
   const [faceFile, setFaceFile] = useState<File | null>(null);
   const [faceUploadLoading, setFaceUploadLoading] = useState(false);
@@ -68,18 +63,15 @@ const Staff: React.FC = () => {
     if (!currentOrganization) return;
     setFaceUploadLoading(true);
     try {
-      let face_image_url = formData.face_image_url || '';
       if (faceFile) {
         const formDataObj = new FormData();
         formDataObj.append('face', faceFile);
-        formDataObj.append('id', formData.employee_id);
+        formDataObj.append('id', formData.staff_id);
         const response = await fetch('http://localhost:5000/api/upload-face', {
           method: 'POST',
           body: formDataObj,
         });
         if (!response.ok) throw new Error('Face image upload failed');
-        const data = await response.json();
-        face_image_url = data.path;
       }
       const staffData = {
         ...formData,
@@ -91,13 +83,13 @@ const Staff: React.FC = () => {
           .update(staffData)
           .eq('id', editingStaff.id);
         if (error) throw error;
-        toast.success('Staff member updated successfully');
+        toast.success('Staff updated successfully');
       } else {
         const { error } = await supabase
           .from('staff')
           .insert([staffData]);
         if (error) throw error;
-        toast.success('Staff member created successfully');
+        toast.success('Staff created successfully');
       }
       setShowModal(false);
       setEditingStaff(null);
@@ -105,7 +97,7 @@ const Staff: React.FC = () => {
       setFaceFile(null);
       fetchData();
     } catch (error: any) {
-      toast.error(error.message || 'Failed to save staff member');
+      toast.error(error.message || 'Failed to save staff');
     } finally {
       setFaceUploadLoading(false);
     }
@@ -114,20 +106,15 @@ const Staff: React.FC = () => {
   const handleEdit = (staffMember: any) => {
     setEditingStaff(staffMember);
     setFormData({
-      employee_id: staffMember.employee_id || '',
+      staff_id: staffMember.staff_id || '',
       full_name: staffMember.full_name || '',
       email: staffMember.email || '',
       phone: staffMember.phone || '',
       department_id: staffMember.department_id || '',
       role: staffMember.role || '',
-      designation: staffMember.designation || '',
-      qualification: staffMember.qualification || '',
-      experience: staffMember.experience || '',
       address: staffMember.address || '',
       date_of_birth: staffMember.date_of_birth || '',
       gender: staffMember.gender || '',
-      joining_date: staffMember.joining_date || '',
-      face_image_url: staffMember.face_image_url || '',
     });
     setShowModal(true);
   };
@@ -150,20 +137,15 @@ const Staff: React.FC = () => {
 
   const resetForm = () => {
     setFormData({
-      employee_id: '',
+      staff_id: '',
       full_name: '',
       email: '',
       phone: '',
       department_id: '',
       role: '',
-      designation: '',
-      qualification: '',
-      experience: '',
       address: '',
       date_of_birth: '',
       gender: '',
-      joining_date: '',
-      face_image_url: '',
     });
   };
 
@@ -377,8 +359,8 @@ const Staff: React.FC = () => {
                   <input
                     type="text"
                     required
-                    value={formData.employee_id}
-                    onChange={(e) => setFormData({ ...formData, employee_id: e.target.value })}
+                    value={formData.staff_id}
+                    onChange={(e) => setFormData({ ...formData, staff_id: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
@@ -454,34 +436,12 @@ const Staff: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Designation
+                    Date of Birth
                   </label>
                   <input
-                    type="text"
-                    value={formData.designation}
-                    onChange={(e) => setFormData({ ...formData, designation: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Qualification
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.qualification}
-                    onChange={(e) => setFormData({ ...formData, qualification: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Experience (Years)
-                  </label>
-                  <input
-                    type="number"
-                    value={formData.experience}
-                    onChange={(e) => setFormData({ ...formData, experience: e.target.value })}
+                    type="date"
+                    value={formData.date_of_birth}
+                    onChange={(e) => setFormData({ ...formData, date_of_birth: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
@@ -499,40 +459,6 @@ const Staff: React.FC = () => {
                     <option value="female">Female</option>
                     <option value="other">Other</option>
                   </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Date of Birth
-                  </label>
-                  <input
-                    type="date"
-                    value={formData.date_of_birth}
-                    onChange={(e) => setFormData({ ...formData, date_of_birth: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Joining Date
-                  </label>
-                  <input
-                    type="date"
-                    value={formData.joining_date}
-                    onChange={(e) => setFormData({ ...formData, joining_date: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Face Image
-                  </label>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={e => setFaceFile(e.target.files?.[0] || null)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                  {faceUploadLoading && <span className="text-xs text-blue-600">Uploading...</span>}
                 </div>
               </div>
               <div>
