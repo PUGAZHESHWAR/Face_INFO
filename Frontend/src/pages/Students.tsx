@@ -28,7 +28,6 @@ const Students: React.FC = () => {
     address: '',
     date_of_birth: '',
     gender: '',
-    face_image_url: '',
   });
   const [faceFile, setFaceFile] = useState<File | null>(null);
   const [faceUploadLoading, setFaceUploadLoading] = useState(false);
@@ -65,25 +64,39 @@ const Students: React.FC = () => {
     e.preventDefault();
     if (!currentOrganization) return;
     setFaceUploadLoading(true);
+    
     try {
-      let face_image_url = formData.face_image_url || '';
+      // First validate roll number
+      if (!formData.roll_number.trim()) {
+        throw new Error('Roll number is required before uploading face image');
+      }
+  
+      // Upload face image if present
       if (faceFile) {
         const formDataObj = new FormData();
         formDataObj.append('face', faceFile);
-        formDataObj.append('id', formData.roll_number);
-        const response = await fetch('http://localhost:5000/api/upload-face', {
+        formDataObj.append('identifier', formData.roll_number); 
+        formDataObj.append('id_type', 'student'); 
+        console.log('Submitting with roll number:', formData.roll_number); // Debug log
+  
+        const uploadResponse = await fetch('http://localhost:5000/api/upload-face', {
           method: 'POST',
           body: formDataObj,
         });
-        if (!response.ok) throw new Error('Face image upload failed');
-        const data = await response.json();
-        face_image_url = data.path;
+        
+        if (!uploadResponse.ok) {
+          const errorData = await uploadResponse.json();
+          console.error('Upload error:', errorData); // Debug log
+          throw new Error(errorData.error || 'Face image upload failed');
+        }
       }
+  
+      // Then save student data
       const studentData = {
         ...formData,
-        face_image_url,
         organization_id: currentOrganization.id,
       };
+  
       if (editingStudent) {
         const { error } = await supabase
           .from('students')
@@ -98,6 +111,7 @@ const Students: React.FC = () => {
         if (error) throw error;
         toast.success('Student created successfully');
       }
+  
       setShowModal(false);
       setEditingStudent(null);
       resetForm();
@@ -109,7 +123,6 @@ const Students: React.FC = () => {
       setFaceUploadLoading(false);
     }
   };
-
   const handleEdit = (student: any) => {
     setEditingStudent(student);
     setFormData({
@@ -124,7 +137,6 @@ const Students: React.FC = () => {
       address: student.address || '',
       date_of_birth: student.date_of_birth || '',
       gender: student.gender || '',
-      face_image_url: student.face_image_url || '',
     });
     setShowModal(true);
   };
@@ -158,7 +170,6 @@ const Students: React.FC = () => {
       address: '',
       date_of_birth: '',
       gender: '',
-      face_image_url: '',
     });
   };
 
